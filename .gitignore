@@ -1,0 +1,12 @@
+# Terraform
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfvars
+**/terraform.tfstate
+**/terraform.tfstate.*
+**/crash.log
+**/*.pem
+
+# AI Agent
+CLAUDE.md
+AGENTS.md
