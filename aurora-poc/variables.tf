@@ -15,3 +15,20 @@ variable "db_username" {
 variable "db_name" {
   default = "testdb"
 }
+
+variable "github_repo" {
+  description = "GitHub repository in format owner/repo"
+  type        = string
+}
+
+variable "glue_db_username" {
+  description = "Glue DB username"
+  type        = string
+  default     = "glue_user"
+}
+
+variable "glue_db_password" {
+  description = "Glue DB password"
+  type        = string
+  sensitive   = true
+}
