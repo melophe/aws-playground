@@ -1,0 +1,21 @@
+# Terraform state
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# 秘密鍵
+*.pem
+
+# 実際の変数ファイル
+terraform.tfvars
+
+# クラッシュログ
+crash.log
+crash.*.log
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
