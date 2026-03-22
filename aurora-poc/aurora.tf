@@ -8,16 +8,16 @@ resource "aws_db_subnet_group" "aurora" {
 }
 
 resource "aws_rds_cluster" "aurora" {
-  cluster_identifier      = "aurora-poc-cluster"
-  engine                  = "aurora-mysql"
-  engine_version          = "8.0.mysql_aurora.3.05.2"
-  database_name           = var.db_name
-  master_username         = var.db_username
-  master_password         = var.db_password
-  db_subnet_group_name    = aws_db_subnet_group.aurora.name
-  vpc_security_group_ids  = [aws_security_group.aurora.id]
-  skip_final_snapshot     = true
-  deletion_protection     = false
+  cluster_identifier     = "aurora-poc-cluster"
+  engine                 = "aurora-mysql"
+  engine_version         = "8.0.mysql_aurora.3.12.0"
+  database_name          = var.db_name
+  master_username        = var.db_username
+  master_password        = var.db_password
+  db_subnet_group_name   = aws_db_subnet_group.aurora.name
+  vpc_security_group_ids = [aws_security_group.aurora.id]
+  skip_final_snapshot    = true
+  deletion_protection    = false
 
   tags = {
     Name = "aurora-poc-cluster"
