@@ -13,7 +13,7 @@ resource "aws_instance" "bastion" {
   instance_type          = "t3.micro"
   subnet_id              = aws_subnet.public_a.id
   vpc_security_group_ids = [aws_security_group.bastion.id]
-  key_name               = aws_key_pair.bastion.key_name
+  iam_instance_profile   = aws_iam_instance_profile.bastion_ssm.name
 
   tags = {
     Name = "aurora-poc-bastion"
