@@ -16,6 +16,28 @@ resource "aws_iam_role_policy_attachment" "glue_service" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
 }
 
+resource "aws_iam_role_policy" "glue_s3" {
+  name = "aurora-poc-glue-s3-policy"
+  role = aws_iam_role.glue.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ]
+      Resource = [
+        aws_s3_bucket.glue_scripts.arn,
+        "${aws_s3_bucket.glue_scripts.arn}/*"
+      ]
+    }]
+  })
+}
+
 resource "aws_glue_catalog_database" "main" {
   name = "aurora-poc-db"
 }
@@ -26,8 +48,8 @@ resource "aws_glue_connection" "aurora" {
 
   connection_properties = {
     JDBC_CONNECTION_URL = "jdbc:mysql://${aws_rds_cluster.aurora.endpoint}:3306/testdb"
-    USERNAME            = "glue_user"
-    PASSWORD            = "***REMOVED***"
+    USERNAME            = var.glue_db_username
+    PASSWORD            = var.glue_db_password
   }
 
   physical_connection_requirements {
@@ -38,9 +60,11 @@ resource "aws_glue_connection" "aurora" {
 }
 
 resource "aws_glue_job" "insert_users" {
-  name         = "aurora-poc-insert-users"
-  role_arn     = aws_iam_role.glue.arn
-  glue_version = "4.0"
+  name              = "aurora-poc-insert-users"
+  role_arn          = aws_iam_role.glue.arn
+  glue_version      = "5.0"
+  worker_type       = "G.1X"
+  number_of_workers = 2
 
   connections = [aws_glue_connection.aurora.name]
 
@@ -51,11 +75,11 @@ resource "aws_glue_job" "insert_users" {
   }
 
   default_arguments = {
-    "--job-language"        = "python"
-    "--TempDir"             = "s3://${aws_s3_bucket.glue_scripts.bucket}/temp/"
-    "--DB_URL"              = "jdbc:mysql://${aws_rds_cluster.aurora.endpoint}:3306/testdb"
-    "--DB_USER"             = "glue_user"
-    "--DB_PASSWORD"         = "***REMOVED***"
+    "--job-language" = "python"
+    "--TempDir"      = "s3://${aws_s3_bucket.glue_scripts.bucket}/temp/"
+    "--DB_URL"       = "jdbc:mysql://${aws_rds_cluster.aurora.endpoint}:3306/testdb"
+    "--DB_USER"      = var.glue_db_username
+    "--DB_PASSWORD"  = var.glue_db_password
   }
 }
 
@@ -65,45 +89,3 @@ resource "aws_s3_bucket" "glue_scripts" {
 }
 
 data "aws_caller_identity" "current" {}
-
-resource "aws_s3_object" "insert_users_script" {
-  bucket  = aws_s3_bucket.glue_scripts.bucket
-  key     = "scripts/insert_users.py"
-  content = <<-EOF
-import sys
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
-
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'DB_URL', 'DB_USER', 'DB_PASSWORD'])
-
-sc = SparkContext()
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
-job = Job(glueContext)
-job.init(args['JOB_NAME'], args)
-
-# 挿入するデータ
-data = [
-    (1, "Alice", "alice@example.com"),
-    (2, "Bob",   "bob@example.com"),
-    (3, "Carol", "carol@example.com"),
-]
-columns = ["id", "name", "email"]
-df = spark.createDataFrame(data, columns)
-
-# Auroraに書き込み
-df.write \
-    .format("jdbc") \
-    .option("url", args['DB_URL']) \
-    .option("dbtable", "users") \
-    .option("user", args['DB_USER']) \
-    .option("password", args['DB_PASSWORD']) \
-    .option("driver", "com.mysql.cj.jdbc.Driver") \
-    .mode("append") \
-    .save()
-
-job.commit()
-EOF
-}
