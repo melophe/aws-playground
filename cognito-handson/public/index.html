@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Cognito ハンズオン</title>
+  <style>
+    body { font-family: sans-serif; max-width: 500px; margin: 40px auto; padding: 0 20px; }
+    input { width: 100%; padding: 8px; margin: 6px 0 12px; box-sizing: border-box; }
+    button { width: 100%; padding: 10px; background: #232f3e; color: white; border: none; cursor: pointer; border-radius: 4px; }
+    button:hover { background: #ff9900; }
+    #result { margin-top: 20px; padding: 12px; background: #f4f4f4; border-radius: 4px; word-break: break-all; white-space: pre-wrap; font-size: 13px; display: none; }
+    #result.error { background: #fde; }
+    h2 { border-bottom: 2px solid #ff9900; padding-bottom: 8px; }
+    .claims { margin-top: 16px; }
+    .claims table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .claims td { padding: 6px 8px; border: 1px solid #ddd; }
+    .claims td:first-child { font-weight: bold; background: #f9f9f9; width: 40%; }
+  </style>
+</head>
+<body>
+  <h2>Cognito ログイン</h2>
+
+  <!-- 設定 -->
+  <label>User Pool ID</label>
+  <input id="userPoolId" placeholder="ap-northeast-1_XXXXXXXXX" />
+
+  <label>Client ID</label>
+  <input id="clientId" placeholder="XXXXXXXXXXXXXXXXXXXXXXXXXX" />
+
+  <label>メールアドレス</label>
+  <input id="email" type="email" placeholder="test@example.com" />
+
+  <label>パスワード</label>
+  <input id="password" type="password" placeholder="パスワード" />
+
+  <button onclick="login()">ログイン</button>
+
+  <div id="result"></div>
+  <div id="claims" class="claims"></div>
+
+  <script>
+    async function loadConfig() {
+      try {
+        const res = await fetch('/config');
+        if (!res.ok) return;
+        const config = await res.json();
+        if (config.userPoolId) document.getElementById('userPoolId').value = config.userPoolId;
+        if (config.clientId) document.getElementById('clientId').value = config.clientId;
+      } catch (_) {}
+    }
+    loadConfig();
+  </script>
+  <script>
+    async function login() {
+      const userPoolId = document.getElementById('userPoolId').value.trim();
+      const clientId   = document.getElementById('clientId').value.trim();
+      const email      = document.getElementById('email').value.trim();
+      const password   = document.getElementById('password').value;
+      const resultEl   = document.getElementById('result');
+      const claimsEl   = document.getElementById('claims');
+
+      resultEl.style.display = 'block';
+      resultEl.className = '';
+      resultEl.textContent = 'ログイン中...';
+      claimsEl.innerHTML = '';
+
+      const region = userPoolId.split('_')[0];
+      const url = `https://cognito-idp.${region}.amazonaws.com/`;
+
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-amz-json-1.1',
+            'X-Amz-Target': 'AWSCognitoIdentityProviderService.InitiateAuth',
+          },
+          body: JSON.stringify({
+            AuthFlow: 'USER_PASSWORD_AUTH',
+            ClientId: clientId,
+            AuthParameters: {
+              USERNAME: email,
+              PASSWORD: password,
+            },
+          }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          resultEl.className = 'error';
+          resultEl.textContent = `エラー: ${data.__type}\n${data.message}`;
+          return;
+        }
+
+        const idToken = data.AuthenticationResult.IdToken;
+
+        // JWTのペイロードをデコード
+        const payload = JSON.parse(atob(idToken.split('.')[1]));
+
+        resultEl.textContent = 'ログイン成功！\n\nIdToken (先頭100文字):\n' + idToken.substring(0, 100) + '...';
+
+        // クレームを表示
+        claimsEl.innerHTML = `
+          <h2>JWT クレーム</h2>
+          <table>
+            <tr><td>sub</td><td>${payload.sub}</td></tr>
+            <tr><td>email</td><td>${payload.email}</td></tr>
+            <tr><td>email_verified</td><td>${payload.email_verified}</td></tr>
+            <tr><td>iss</td><td>${payload.iss}</td></tr>
+            <tr><td>aud</td><td>${payload.aud}</td></tr>
+            <tr><td>token_use</td><td>${payload.token_use}</td></tr>
+            <tr><td>exp</td><td>${new Date(payload.exp * 1000).toLocaleString('ja-JP')}</td></tr>
+          </table>
+        `;
+
+      } catch (e) {
+        resultEl.className = 'error';
+        resultEl.textContent = `ネットワークエラー: ${e.message}`;
+      }
+    }
+  </script>
+</body>
+</html>
