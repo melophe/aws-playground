@@ -1,0 +1,13 @@
+# Node.js
+node_modules/
+
+# 機密情報
+.env
+config.json
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
