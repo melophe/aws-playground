@@ -50,4 +50,32 @@ resource "aws_cognito_user_pool" "main" {
 resource "aws_cognito_user_pool_client" "main" {
   name         = "My SPA app - ywnc5r"
   user_pool_id = aws_cognito_user_pool.main.id
+
+  access_token_validity                         = 60
+  id_token_validity                             = 60
+  refresh_token_validity                        = 5
+  auth_session_validity                         = 3
+  enable_token_revocation                       = true
+  enable_propagate_additional_user_context_data = false
+  prevent_user_existence_errors                 = "ENABLED"
+
+  allowed_oauth_flows_user_pool_client = true
+  allowed_oauth_flows                  = ["code"]
+  allowed_oauth_scopes                 = ["email", "openid", "phone"]
+  callback_urls                        = ["https://localhost"]
+  logout_urls                          = []
+  supported_identity_providers         = ["COGNITO"]
+
+  explicit_auth_flows = [
+    "ALLOW_REFRESH_TOKEN_AUTH",
+    "ALLOW_USER_AUTH",
+    "ALLOW_USER_PASSWORD_AUTH",
+    "ALLOW_USER_SRP_AUTH",
+  ]
+
+  token_validity_units {
+    access_token  = "minutes"
+    id_token      = "minutes"
+    refresh_token = "days"
+  }
 }
