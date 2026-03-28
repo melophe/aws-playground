@@ -1,0 +1,226 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SAMの主要構文サンプル集
+
+# ========================================
+# Globals: 全Lambda共通の設定をまとめる
+# 個別のFunctionで上書きも可能
+# ========================================
+Globals:
+  Function:
+    Runtime: python3.10
+    Timeout: 30
+    MemorySize: 128
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        # 全Lambda共通の環境変数
+        LOG_LEVEL: INFO
+        STAGE: !Ref Stage
+
+# ========================================
+# Parameters: デプロイ時に外から値を渡す
+# sam deploy --parameter-overrides Stage=prod
+# ========================================
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: デプロイ環境
+
+# ========================================
+# Resources: AWSリソースの定義
+# ========================================
+Resources:
+
+  # ----------------------------------------
+  # 1. API Gateway (HTTP API) トリガー
+  #    REST APIより安くてシンプル
+  # ----------------------------------------
+  HttpApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/http_api/
+      Handler: app.lambda_handler
+      Description: HTTP APIトリガーのLambda
+      Events:
+        GetItems:
+          Type: HttpApi          # REST APIより新しいHTTP API
+          Properties:
+            Path: /items
+            Method: GET
+        CreateItem:
+          Type: HttpApi
+          Properties:
+            Path: /items
+            Method: POST
+
+  # ----------------------------------------
+  # 2. SQS トリガー
+  #    非同期処理・キューイング
+  # ----------------------------------------
+  SqsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      # 処理失敗時にメッセージを退避するDLQ
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3  # 3回失敗したらDLQへ
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+
+  SqsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/sqs/
+      Handler: app.lambda_handler
+      Description: SQSトリガーのLambda（非同期処理）
+      Events:
+        SqsTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SqsQueue.Arn
+            BatchSize: 10           # 一度に最大10件処理
+            FunctionResponseTypes:
+              - ReportBatchItemFailures  # 部分的な失敗を報告できる
+
+  # ----------------------------------------
+  # 3. EventBridge (cron) トリガー
+  #    定期実行・スケジュール処理
+  # ----------------------------------------
+  ScheduledFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/scheduled/
+      Handler: app.lambda_handler
+      Description: 毎日9時に実行されるLambda
+      Events:
+        DailyTrigger:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 0 * * ? *)  # UTC 0:00 = JST 9:00
+            Name: daily-report
+            Description: 毎日9時に定期実行
+
+  # ----------------------------------------
+  # 4. DynamoDB トリガー
+  #    テーブルの変更をストリームで受け取る
+  # ----------------------------------------
+  ItemsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "items-${Stage}"
+      BillingMode: PAY_PER_REQUEST  # オンデマンド課金（小規模向き）
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES  # 変更前後の両方を取得
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  DynamoStreamFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/dynamo_stream/
+      Handler: app.lambda_handler
+      Description: DynamoDBの変更をストリームで受け取るLambda
+      Policies:
+        - DynamoDBStreamReadPolicy:
+            TableName: !Ref ItemsTable
+            StreamName: !Select [3, !Split ["/", !GetAtt ItemsTable.StreamArn]]
+      Events:
+        DynamoStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt ItemsTable.StreamArn
+            StartingPosition: TRIM_HORIZON  # ストリームの最初から処理
+            BatchSize: 100
+
+  # ----------------------------------------
+  # 5. Lambda Layer
+  #    複数Lambda間で共通ライブラリを共有
+  # ----------------------------------------
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: common-layer
+      Description: 共通ユーティリティ（boto3拡張、ロガー等）
+      ContentUri: layers/common/
+      CompatibleRuntimes:
+        - python3.10
+    Metadata:
+      BuildMethod: python3.10  # Layerもsam buildでビルドされる
+
+  LayerUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/layer_user/
+      Handler: app.lambda_handler
+      Description: Layerを使うLambda
+      Layers:
+        - !Ref CommonLayer  # 上で定義したLayerを参照
+
+  # ----------------------------------------
+  # 6. Step Functions との連携
+  #    複数Lambdaをオーケストレーション
+  # ----------------------------------------
+  StepOneFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/step_one/
+      Handler: app.lambda_handler
+
+  StepTwoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/step_two/
+      Handler: app.lambda_handler
+
+  # Step Functionsのステートマシン定義
+  MyStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Definition:
+        StartAt: StepOne
+        States:
+          StepOne:
+            Type: Task
+            Resource: !GetAtt StepOneFunction.Arn
+            Next: StepTwo
+          StepTwo:
+            Type: Task
+            Resource: !GetAtt StepTwoFunction.Arn
+            End: true
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StepOneFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StepTwoFunction
+
+# ========================================
+# Outputs: デプロイ後に表示される情報
+# 他のスタックから参照することも可能
+# ========================================
+Outputs:
+  HttpApiUrl:
+    Description: "HTTP APIのエンドポイントURL"
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}/"
+    # Export で他スタックから参照可能にする
+    Export:
+      Name: !Sub "${AWS::StackName}-HttpApiUrl"
+
+  SqsQueueUrl:
+    Description: "SQSキューのURL"
+    Value: !Ref SqsQueue
+
+  ItemsTableName:
+    Description: "DynamoDBテーブル名"
+    Value: !Ref ItemsTable

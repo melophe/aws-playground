@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SAM Policy Templates サンプル集
+
+Resources:
+
+  # ========================================
+  # 事前に必要なリソース定義
+  # ========================================
+  MyBucket:
+    Type: AWS::S3::Bucket
+
+  MyTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  MyQueue:
+    Type: AWS::SQS::Queue
+
+  MyTopic:
+    Type: AWS::SNS::Topic
+
+  # ========================================
+  # 1. S3ポリシー
+  # ========================================
+  S3ReadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Description: S3から読み取るだけのLambda
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref MyBucket   # GetObject, ListBucket のみ許可
+
+  S3WriteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Description: S3に書き込むだけのLambda
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref MyBucket   # PutObject のみ許可
+
+  S3CrudFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Description: S3をCRUDするLambda
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref MyBucket   # Get, Put, Delete, List すべて許可
+
+  # ========================================
+  # 2. DynamoDBポリシー
+  # ========================================
+  DynamoReadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref MyTable     # GetItem, Query, Scan のみ許可
+
+  DynamoWriteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref MyTable     # PutItem, UpdateItem, DeleteItem のみ許可
+
+  DynamoCrudFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MyTable     # CRUD + Query + Scan すべて許可
+
+  # ========================================
+  # 3. SQSポリシー
+  # ========================================
+  SqsConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Description: SQSからメッセージを受け取るLambda
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !GetAtt MyQueue.QueueName  # ReceiveMessage, DeleteMessage 許可
+
+  SqsProducerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Description: SQSにメッセージを送るLambda
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt MyQueue.QueueName  # SendMessage のみ許可
+
+  # ========================================
+  # 4. SNSポリシー
+  # ========================================
+  SnsPublisherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Description: SNSトピックにメッセージを発行するLambda
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt MyTopic.TopicName  # Publish のみ許可
+
+  # ========================================
+  # 5. SSM Parameter Storeポリシー
+  # ========================================
+  SsmReaderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Description: SSMからシークレットを読み取るLambda
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: /myapp/*     # /myapp/ 以下のパラメータ読み取り許可
+
+  # ========================================
+  # 6. Lambda呼び出しポリシー
+  # ========================================
+  OrchestratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Description: 別のLambdaを呼び出すオーケストレーター
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SqsConsumerFunction  # 特定のLambdaのみ呼び出し許可
+
+  # ========================================
+  # 7. 複数ポリシーの組み合わせ
+  # ========================================
+  MultiPolicyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Description: S3読み取り + DynamoDB書き込み + SSM読み取り
+      Policies:
+        # 元画像をS3から読む
+        - S3ReadPolicy:
+            BucketName: !Ref MyBucket
+        # 処理結果をDynamoDBに書く
+        - DynamoDBWritePolicy:
+            TableName: !Ref MyTable
+        # APIキー等の設定をSSMから読む
+        - SSMParameterReadPolicy:
+            ParameterName: /myapp/api-key
+        # 処理完了をSNSで通知する
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt MyTopic.TopicName
+
+  # ========================================
+  # 8. カスタムIAMポリシー（テンプレートにない場合）
+  # ========================================
+  CustomPolicyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Description: SAMテンプレートにない操作が必要な場合は自分で書く
+      Policies:
+        - PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail       # SESでメール送信（テンプレートなし）
+                  - ses:SendRawEmail
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData  # カスタムメトリクス送信
+                Resource: "*"
