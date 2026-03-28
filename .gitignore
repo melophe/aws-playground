@@ -7,6 +7,13 @@
 **/crash.log
 **/*.pem
 
+# SAM
+**/.aws-sam/
+**/samconfig.toml
+
+# Node.js
+**/node_modules/
+
 # AI Agent
 CLAUDE.md
 AGENTS.md
