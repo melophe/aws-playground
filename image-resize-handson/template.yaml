@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  image-resize-handson
+  S3に画像をアップロードすると自動でリサイズするサービス
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.10
+    Architectures:
+      - x86_64
+
+Resources:
+  # リサイズ済み画像の保存先バケット（依存なし、先に定義）
+  ResizedBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "image-resize-resized-${AWS::AccountId}"
+
+  # リサイズ処理を行うLambda関数
+  ResizeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: resize/
+      Handler: app.lambda_handler
+      Description: S3に画像がアップロードされたらリサイズして別バケットに保存する
+      Environment:
+        Variables:
+          RESIZED_BUCKET: !Ref ResizedBucket
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Sub "image-resize-source-${AWS::AccountId}"
+        - S3WritePolicy:
+            BucketName: !Ref ResizedBucket
+
+  # LambdaがS3から呼ばれることを許可
+  ResizeFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ResizeFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::image-resize-source-${AWS::AccountId}"
+
+  # 元画像のアップロード先バケット（Lambdaが出来てから作成）
+  # NotificationConfigurationでトリガーを設定することで循環参照を回避
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: ResizeFunctionPermission
+    Properties:
+      BucketName: !Sub "image-resize-source-${AWS::AccountId}"
+      NotificationConfiguration:
+        LambdaConfigurations:
+          # suffixルールは1つしか指定できないためjpgのみ
+          # .jpegはアプリ側（app.py）で対応可能
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .jpg
+            Function: !GetAtt ResizeFunction.Arn
+
+Outputs:
+  SourceBucketName:
+    Description: "元画像をアップロードするS3バケット名"
+    Value: !Ref SourceBucket
+  ResizedBucketName:
+    Description: "リサイズ済み画像が保存されるS3バケット名"
+    Value: !Ref ResizedBucket
+  ResizeFunctionArn:
+    Description: "Lambda関数のARN"
+    Value: !GetAtt ResizeFunction.Arn

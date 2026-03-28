@@ -1,0 +1,14 @@
+{
+  "Records": [
+    {
+      "s3": {
+        "bucket": {
+          "name": "image-resize-source-123456789012"
+        },
+        "object": {
+          "key": "sample.jpg"
+        }
+      }
+    }
+  ]
+}
