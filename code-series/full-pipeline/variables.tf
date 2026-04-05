@@ -22,7 +22,6 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
-# variable "github_repo_url" {}
 # variable "github_repo_id" {}
 # variable "github_branch" {}
 # variable "ssh_public_key" {}

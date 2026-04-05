@@ -27,7 +27,18 @@ module "network" {
   tags         = local.tags
 }
 
-# module "github" {}
-# module "codebuild" {}
+module "github" {
+  source       = "./modules/github"
+  project_name = var.project_name
+  tags         = local.tags
+}
+
+module "codebuild" {
+  source       = "./modules/codebuild"
+  project_name = var.project_name
+  aws_region   = var.aws_region
+  tags         = local.tags
+}
+
 # module "codedeploy" {}
 # module "codepipeline" {}
