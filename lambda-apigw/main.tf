@@ -33,22 +33,21 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
 }
 
 # ----------------------------------------
-# CloudWatch Logs
+# CloudWatch Logs (Lambda)
 # ----------------------------------------
-resource "aws_cloudwatch_log_group" "lambda" {
-  name              = "/aws/lambda/${aws_lambda_function.main.function_name}"
+resource "aws_cloudwatch_log_group" "lambda_items" {
+  name              = "/aws/lambda/my-lambda-items"
+  retention_in_days = 14
+}
+
+resource "aws_cloudwatch_log_group" "lambda_health" {
+  name              = "/aws/lambda/my-lambda-health"
   retention_in_days = 14
 }
 
 # ----------------------------------------
-# Lambda Function
+# Lambda Layer
 # ----------------------------------------
-data "archive_file" "lambda" {
-  type        = "zip"
-  source_file = "${path.module}/src/index.py"
-  output_path = "${path.module}/dist/lambda.zip"
-}
-
 data "archive_file" "layer" {
   type        = "zip"
   source_dir  = "${path.module}/layer"
@@ -62,13 +61,28 @@ resource "aws_lambda_layer_version" "common" {
   compatible_runtimes = ["python3.12"]
 }
 
-resource "aws_lambda_function" "main" {
-  function_name    = "my-lambda"
+# ----------------------------------------
+# Lambda Functions
+# ----------------------------------------
+data "archive_file" "lambda_items" {
+  type        = "zip"
+  source_file = "${path.module}/src/index.py"
+  output_path = "${path.module}/dist/lambda-items.zip"
+}
+
+data "archive_file" "lambda_health" {
+  type        = "zip"
+  source_file = "${path.module}/src/health.py"
+  output_path = "${path.module}/dist/lambda-health.zip"
+}
+
+resource "aws_lambda_function" "items" {
+  function_name    = "my-lambda-items"
   role             = aws_iam_role.lambda.arn
   handler          = "index.handler"
   runtime          = "python3.12"
-  filename         = data.archive_file.lambda.output_path
-  source_code_hash = data.archive_file.lambda.output_base64sha256
+  filename         = data.archive_file.lambda_items.output_path
+  source_code_hash = data.archive_file.lambda_items.output_base64sha256
   publish          = true
   layers           = [aws_lambda_layer_version.common.arn]
 
@@ -79,16 +93,40 @@ resource "aws_lambda_function" "main" {
   }
 }
 
-resource "aws_lambda_alias" "live" {
+resource "aws_lambda_function" "health" {
+  function_name    = "my-lambda-health"
+  role             = aws_iam_role.lambda.arn
+  handler          = "health.handler"
+  runtime          = "python3.12"
+  filename         = data.archive_file.lambda_health.output_path
+  source_code_hash = data.archive_file.lambda_health.output_base64sha256
+  publish          = true
+  layers           = [aws_lambda_layer_version.common.arn]
+
+  environment {
+    variables = {
+      ENV = "dev"
+    }
+  }
+}
+
+resource "aws_lambda_alias" "items_live" {
   name             = "live"
-  function_name    = aws_lambda_function.main.function_name
-  function_version = aws_lambda_function.main.version
+  function_name    = aws_lambda_function.items.function_name
+  function_version = aws_lambda_function.items.version
 
   routing_config {
-    additional_version_weights = {
-      # カナリアリリース時にここ変える
-      # 例: "${aws_lambda_function.main.version}" = 0.1
-    }
+    additional_version_weights = {}
+  }
+}
+
+resource "aws_lambda_alias" "health_live" {
+  name             = "live"
+  function_name    = aws_lambda_function.health.function_name
+  function_version = aws_lambda_function.health.version
+
+  routing_config {
+    additional_version_weights = {}
   }
 }
 
@@ -133,10 +171,17 @@ resource "aws_apigatewayv2_stage" "main" {
   }
 }
 
-resource "aws_apigatewayv2_integration" "lambda" {
+resource "aws_apigatewayv2_integration" "items" {
   api_id                 = aws_apigatewayv2_api.main.id
   integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_alias.live.invoke_arn
+  integration_uri        = aws_lambda_alias.items_live.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_integration" "health" {
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_alias.health_live.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -144,22 +189,37 @@ resource "aws_apigatewayv2_integration" "lambda" {
 resource "aws_apigatewayv2_route" "get_items" {
   api_id    = aws_apigatewayv2_api.main.id
   route_key = "GET /items"
-  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  target    = "integrations/${aws_apigatewayv2_integration.items.id}"
 }
 
 # POST /items
 resource "aws_apigatewayv2_route" "post_items" {
   api_id    = aws_apigatewayv2_api.main.id
   route_key = "POST /items"
-  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  target    = "integrations/${aws_apigatewayv2_integration.items.id}"
 }
 
-# Lambda に API Gateway からの呼び出しを許可
-resource "aws_lambda_permission" "apigw" {
+# GET /health
+resource "aws_apigatewayv2_route" "get_health" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "GET /health"
+  target    = "integrations/${aws_apigatewayv2_integration.health.id}"
+}
+
+resource "aws_lambda_permission" "apigw_items" {
   statement_id  = "AllowAPIGateway"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.main.function_name
-  qualifier     = aws_lambda_alias.live.name
+  function_name = aws_lambda_function.items.function_name
+  qualifier     = aws_lambda_alias.items_live.name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
+}
+
+resource "aws_lambda_permission" "apigw_health" {
+  statement_id  = "AllowAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.health.function_name
+  qualifier     = aws_lambda_alias.health_live.name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
 }
@@ -171,6 +231,9 @@ output "api_endpoint" {
   value = aws_apigatewayv2_api.main.api_endpoint
 }
 
-output "lambda_function_name" {
-  value = aws_lambda_function.main.function_name
+output "lambda_function_names" {
+  value = {
+    items  = aws_lambda_function.items.function_name
+    health = aws_lambda_function.health.function_name
+  }
 }

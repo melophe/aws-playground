@@ -13,6 +13,11 @@
 
 # Node.js
 **/node_modules/
+**/dist/
+**/coverage/
+
+# Lambda Layer
+**/layer/python/
 
 # AI Agent
 CLAUDE.md
