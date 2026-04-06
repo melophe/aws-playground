@@ -79,19 +79,37 @@ resource "aws_apigatewayv2_api" "main" {
   }
 }
 
-resource "aws_apigatewayv2_stage" "main" {
-  api_id      = aws_apigatewayv2_api.main.id
-  name        = "$default"
-  auto_deploy = true
-
-  access_log_settings {
-    destination_arn = aws_cloudwatch_log_group.apigw.arn
-  }
-}
 
 resource "aws_cloudwatch_log_group" "apigw" {
-  name              = "/aws/apigateway/${aws_apigatewayv2_api.main.name}"
+  for_each          = local.stages
+  name              = "/aws/apigateway/${aws_apigatewayv2_api.main.name}/${each.key}"
   retention_in_days = 14
+}
+
+resource "aws_apigatewayv2_stage" "main" {
+  for_each    = local.stages
+  api_id      = aws_apigatewayv2_api.main.id
+  name        = each.key
+  auto_deploy = true
+
+  default_route_settings {
+    throttling_rate_limit  = each.value.throttling_rate_limit
+    throttling_burst_limit = each.value.throttling_burst_limit
+  }
+
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.apigw[each.key].arn
+    format = jsonencode({
+      requestId        = "$context.requestId"
+      ip               = "$context.identity.sourceIp"
+      requestTime      = "$context.requestTime"
+      httpMethod       = "$context.httpMethod"
+      routeKey         = "$context.routeKey"
+      status           = "$context.status"
+      responseLength   = "$context.responseLength"
+      integrationError = "$context.integrationErrorMessage"
+    })
+  }
 }
 
 resource "aws_apigatewayv2_integration" "lambda" {
@@ -127,8 +145,11 @@ resource "aws_lambda_permission" "apigw" {
 # ----------------------------------------
 # Outputs
 # ----------------------------------------
-output "api_endpoint" {
-  value = aws_apigatewayv2_api.main.api_endpoint
+output "api_endpoints" {
+  value = {
+    for stage, _ in local.stages :
+    stage => "${aws_apigatewayv2_api.main.api_endpoint}/${stage}"
+  }
 }
 
 output "lambda_function_name" {
