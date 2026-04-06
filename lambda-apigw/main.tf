@@ -81,24 +81,17 @@ resource "aws_apigatewayv2_api" "main" {
 
 
 resource "aws_cloudwatch_log_group" "apigw" {
-  for_each          = local.stages
-  name              = "/aws/apigateway/${aws_apigatewayv2_api.main.name}/${each.key}"
+  name              = "/aws/apigateway/${aws_apigatewayv2_api.main.name}"
   retention_in_days = 14
 }
 
 resource "aws_apigatewayv2_stage" "main" {
-  for_each    = local.stages
   api_id      = aws_apigatewayv2_api.main.id
-  name        = each.key
+  name        = "$default"
   auto_deploy = true
 
-  default_route_settings {
-    throttling_rate_limit  = each.value.throttling_rate_limit
-    throttling_burst_limit = each.value.throttling_burst_limit
-  }
-
   access_log_settings {
-    destination_arn = aws_cloudwatch_log_group.apigw[each.key].arn
+    destination_arn = aws_cloudwatch_log_group.apigw.arn
     format = jsonencode({
       requestId        = "$context.requestId"
       ip               = "$context.identity.sourceIp"
@@ -145,11 +138,8 @@ resource "aws_lambda_permission" "apigw" {
 # ----------------------------------------
 # Outputs
 # ----------------------------------------
-output "api_endpoints" {
-  value = {
-    for stage, _ in local.stages :
-    stage => "${aws_apigatewayv2_api.main.api_endpoint}/${stage}"
-  }
+output "api_endpoint" {
+  value = aws_apigatewayv2_api.main.api_endpoint
 }
 
 output "lambda_function_name" {
