@@ -45,18 +45,32 @@ resource "aws_cloudwatch_log_group" "lambda" {
 # ----------------------------------------
 data "archive_file" "lambda" {
   type        = "zip"
-  source_file = "${path.module}/src/index.js"
+  source_file = "${path.module}/src/index.py"
   output_path = "${path.module}/dist/lambda.zip"
+}
+
+data "archive_file" "layer" {
+  type        = "zip"
+  source_dir  = "${path.module}/layer"
+  output_path = "${path.module}/dist/layer.zip"
+}
+
+resource "aws_lambda_layer_version" "common" {
+  layer_name          = "common-libs"
+  filename            = data.archive_file.layer.output_path
+  source_code_hash    = data.archive_file.layer.output_base64sha256
+  compatible_runtimes = ["python3.12"]
 }
 
 resource "aws_lambda_function" "main" {
   function_name    = "my-lambda"
   role             = aws_iam_role.lambda.arn
   handler          = "index.handler"
-  runtime          = "nodejs20.x"
+  runtime          = "python3.12"
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
   publish          = true
+  layers           = [aws_lambda_layer_version.common.arn]
 
   environment {
     variables = {
