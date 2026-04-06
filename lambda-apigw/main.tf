@@ -56,10 +56,24 @@ resource "aws_lambda_function" "main" {
   runtime          = "nodejs20.x"
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
+  publish          = true
 
   environment {
     variables = {
       ENV = "dev"
+    }
+  }
+}
+
+resource "aws_lambda_alias" "live" {
+  name             = "live"
+  function_name    = aws_lambda_function.main.function_name
+  function_version = aws_lambda_function.main.version
+
+  routing_config {
+    additional_version_weights = {
+      # カナリアリリース時にここ変える
+      # 例: "${aws_lambda_function.main.version}" = 0.1
     }
   }
 }
@@ -108,7 +122,7 @@ resource "aws_apigatewayv2_stage" "main" {
 resource "aws_apigatewayv2_integration" "lambda" {
   api_id                 = aws_apigatewayv2_api.main.id
   integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_function.main.invoke_arn
+  integration_uri        = aws_lambda_alias.live.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -131,6 +145,7 @@ resource "aws_lambda_permission" "apigw" {
   statement_id  = "AllowAPIGateway"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.main.function_name
+  qualifier     = aws_lambda_alias.live.name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
 }
