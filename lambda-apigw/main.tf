@@ -12,6 +12,32 @@ provider "aws" {
 }
 
 # ----------------------------------------
+# IAM Role - API Gateway CloudWatch Logs
+# ----------------------------------------
+# REST APIのアクセスログをCloudWatchに書くためにアカウントレベルで設定が必要
+resource "aws_iam_role" "apigw_cloudwatch" {
+  name = "apigw-cloudwatch-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "apigateway.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "apigw_cloudwatch" {
+  role       = aws_iam_role.apigw_cloudwatch.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+}
+
+resource "aws_api_gateway_account" "main" {
+  cloudwatch_role_arn = aws_iam_role.apigw_cloudwatch.arn
+}
+
+# ----------------------------------------
 # IAM Role
 # ----------------------------------------
 resource "aws_iam_role" "lambda" {
@@ -225,6 +251,188 @@ resource "aws_lambda_permission" "apigw_health" {
 }
 
 # ----------------------------------------
+# REST API - Lambda Function
+# ----------------------------------------
+data "archive_file" "lambda_items_rest" {
+  type        = "zip"
+  source_file = "${path.module}/src/index_rest.py"
+  output_path = "${path.module}/dist/lambda-items-rest.zip"
+}
+
+resource "aws_cloudwatch_log_group" "lambda_items_rest" {
+  name              = "/aws/lambda/my-lambda-items-rest"
+  retention_in_days = 14
+}
+
+resource "aws_lambda_function" "items_rest" {
+  function_name    = "my-lambda-items-rest"
+  role             = aws_iam_role.lambda.arn
+  handler          = "index_rest.handler"
+  runtime          = "python3.12"
+  filename         = data.archive_file.lambda_items_rest.output_path
+  source_code_hash = data.archive_file.lambda_items_rest.output_base64sha256
+  publish          = true
+  layers           = [aws_lambda_layer_version.common.arn]
+
+  environment {
+    variables = {
+      ENV = "dev"
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.lambda_items_rest]
+}
+
+resource "aws_lambda_alias" "items_rest_live" {
+  name             = "live"
+  function_name    = aws_lambda_function.items_rest.function_name
+  function_version = aws_lambda_function.items_rest.version
+
+  routing_config {
+    additional_version_weights = {}
+  }
+}
+
+# ----------------------------------------
+# REST API (v1) with Canary Deployment
+# ----------------------------------------
+resource "aws_api_gateway_rest_api" "main" {
+  name        = "my-rest-api"
+  description = "REST API with canary deployment"
+
+  endpoint_configuration {
+    types = ["REGIONAL"]
+  }
+}
+
+# /items リソース
+resource "aws_api_gateway_resource" "items" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_rest_api.main.root_resource_id
+  path_part   = "items"
+}
+
+# GET /items
+resource "aws_api_gateway_method" "get_items" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.items.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "get_items" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.items.id
+  http_method             = aws_api_gateway_method.get_items.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_alias.items_rest_live.invoke_arn
+}
+
+# POST /items
+resource "aws_api_gateway_method" "post_items" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.items.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "post_items" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.items.id
+  http_method             = aws_api_gateway_method.post_items.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_alias.items_rest_live.invoke_arn
+}
+
+# デプロイ
+resource "aws_api_gateway_deployment" "main" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+
+  triggers = {
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_resource.items,
+      aws_api_gateway_method.get_items,
+      aws_api_gateway_method.post_items,
+      aws_api_gateway_integration.get_items,
+      aws_api_gateway_integration.post_items,
+    ]))
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_cloudwatch_log_group" "rest_apigw" {
+  name              = "API-Gateway-Execution-Logs_${aws_api_gateway_rest_api.main.id}/prod"
+  retention_in_days = 14
+}
+
+# prodステージ（カナリアデプロイ設定付き）
+# canary_settings により、同一ステージ内でベース(90%)とカナリア(10%)にトラフィックを分割する
+# カナリアに向くのは aws_api_gateway_deployment.canary の内容
+resource "aws_api_gateway_stage" "prod" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  deployment_id = aws_api_gateway_deployment.main.id
+  stage_name    = "prod"
+
+  canary_settings {
+    percent_traffic          = 10   # 10%をカナリアへ
+    deployment_id            = aws_api_gateway_deployment.canary.id
+    use_stage_cache          = false
+  }
+
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.rest_apigw.arn
+    format = jsonencode({
+      requestId       = "$context.requestId"
+      ip              = "$context.identity.sourceIp"
+      requestTime     = "$context.requestTime"
+      httpMethod      = "$context.httpMethod"
+      resourcePath    = "$context.resourcePath"
+      status          = "$context.status"
+      responseLength  = "$context.responseLength"
+      isCanaryRequest = "$context.isCanaryRequest"
+    })
+  }
+
+  depends_on = [aws_cloudwatch_log_group.rest_apigw, aws_api_gateway_account.main]
+}
+
+# カナリア用デプロイ（新バージョン）
+# "canary-v1" の値を変えると新しいデプロイが作られ、10%のトラフィックがこちらへ流れる
+resource "aws_api_gateway_deployment" "canary" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+
+  triggers = {
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_resource.items,
+      aws_api_gateway_method.get_items,
+      aws_api_gateway_method.post_items,
+      aws_api_gateway_integration.get_items,
+      aws_api_gateway_integration.post_items,
+      "canary-v1",  # 新バージョンをカナリアに流すときにここを更新
+    ]))
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Lambda実行権限（REST API用）
+resource "aws_lambda_permission" "rest_apigw_items" {
+  statement_id  = "AllowRESTAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.items_rest.function_name
+  qualifier     = aws_lambda_alias.items_rest_live.name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# ----------------------------------------
 # Outputs
 # ----------------------------------------
 output "api_endpoint" {
@@ -233,7 +441,12 @@ output "api_endpoint" {
 
 output "lambda_function_names" {
   value = {
-    items  = aws_lambda_function.items.function_name
-    health = aws_lambda_function.health.function_name
+    items      = aws_lambda_function.items.function_name
+    health     = aws_lambda_function.health.function_name
+    items_rest = aws_lambda_function.items_rest.function_name
   }
+}
+
+output "rest_api_endpoint" {
+  value = "${aws_api_gateway_stage.prod.invoke_url}/items"
 }
