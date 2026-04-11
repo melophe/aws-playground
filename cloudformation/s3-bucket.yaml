@@ -1,6 +1,13 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'CloudFormation basics - S3 bucket'
 
+Parameters:
+  BucketName:
+    Type: String
+    Description: 'S3 bucket name (must be globally unique)'
+
 Resources:
   MyBucket:
     Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
