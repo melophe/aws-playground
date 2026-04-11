@@ -1,0 +1,6 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation basics - S3 bucket'
+
+Resources:
+  MyBucket:
+    Type: AWS::S3::Bucket
