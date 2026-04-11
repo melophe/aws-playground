@@ -14,6 +14,9 @@ Parameters:
       - dev
       - prod
 
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
 Mappings:
   EnvConfig:
     dev:
@@ -28,6 +31,11 @@ Resources:
       BucketName: !Ref BucketName
       VersioningConfiguration:
         Status: !FindInMap [EnvConfig, !Ref Environment, VersioningStatus]
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !If [IsProd, 'prod', 'dev']
 
 Outputs:
   BucketName:
