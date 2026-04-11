@@ -11,3 +11,11 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Ref BucketName
+
+Outputs:
+  BucketName:
+    Description: 'S3 bucket name'
+    Value: !Ref MyBucket
+  BucketArn:
+    Description: 'S3 bucket ARN'
+    Value: !GetAtt MyBucket.Arn
