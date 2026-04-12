@@ -32,6 +32,11 @@ resource "aws_dynamodb_table" "orders" {
     projection_type = "ALL"
   }
 
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
   tags = {
     Name        = "${var.env}-orders"
     Environment = var.env
