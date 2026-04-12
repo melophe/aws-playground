@@ -11,6 +11,9 @@ provider "aws" {
   region = "ap-northeast-1"
 }
 
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
 # ----------------------------------------
 # IAM Role - API Gateway CloudWatch Logs
 # ----------------------------------------
@@ -293,6 +296,18 @@ resource "aws_lambda_alias" "items_rest_live" {
   }
 }
 
+# stagingエイリアス: 新バージョンを試すためのエイリアス
+# 新バージョンをデプロイしたらここのfunction_versionを更新する
+resource "aws_lambda_alias" "items_rest_staging" {
+  name             = "staging"
+  function_name    = aws_lambda_function.items_rest.function_name
+  function_version = aws_lambda_function.items_rest.version
+
+  routing_config {
+    additional_version_weights = {}
+  }
+}
+
 # ----------------------------------------
 # REST API (v1) with Canary Deployment
 # ----------------------------------------
@@ -318,6 +333,11 @@ resource "aws_api_gateway_method" "get_items" {
   resource_id   = aws_api_gateway_resource.items.id
   http_method   = "GET"
   authorization = "NONE"
+
+  request_parameters = {
+    "method.request.querystring.limit"  = false
+    "method.request.querystring.offset" = false
+  }
 }
 
 resource "aws_api_gateway_integration" "get_items" {
@@ -326,7 +346,10 @@ resource "aws_api_gateway_integration" "get_items" {
   http_method             = aws_api_gateway_method.get_items.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = aws_lambda_alias.items_rest_live.invoke_arn
+  # ステージ変数 alias でエイリアスを切り替える
+  # prod ステージ: alias=live → liveエイリアス（安定版）
+  # staging ステージ: alias=staging → stagingエイリアス（新版）
+  uri = "arn:aws:apigateway:${data.aws_region.current.name}:lambda:path/2015-03-31/functions/arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${aws_lambda_function.items_rest.function_name}:$${stageVariables.alias}/invocations"
 }
 
 # POST /items
@@ -343,7 +366,7 @@ resource "aws_api_gateway_integration" "post_items" {
   http_method             = aws_api_gateway_method.post_items.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = aws_lambda_alias.items_rest_live.invoke_arn
+  uri = "arn:aws:apigateway:${data.aws_region.current.name}:lambda:path/2015-03-31/functions/arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${aws_lambda_function.items_rest.function_name}:$${stageVariables.alias}/invocations"
 }
 
 # デプロイ
@@ -377,6 +400,11 @@ resource "aws_api_gateway_stage" "prod" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
   deployment_id = aws_api_gateway_deployment.main.id
   stage_name    = "prod"
+
+  # ステージ変数: liveエイリアスを向く
+  variables = {
+    alias = "live"
+  }
 
   canary_settings {
     percent_traffic          = 10   # 10%をカナリアへ
@@ -422,12 +450,54 @@ resource "aws_api_gateway_deployment" "canary" {
   }
 }
 
-# Lambda実行権限（REST API用）
-resource "aws_lambda_permission" "rest_apigw_items" {
-  statement_id  = "AllowRESTAPIGateway"
+# stagingステージ: ステージ変数 alias=staging → stagingエイリアス（新バージョン）を向く
+resource "aws_cloudwatch_log_group" "rest_apigw_staging" {
+  name              = "API-Gateway-Execution-Logs_${aws_api_gateway_rest_api.main.id}/staging"
+  retention_in_days = 14
+}
+
+resource "aws_api_gateway_stage" "staging" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  deployment_id = aws_api_gateway_deployment.main.id
+  stage_name    = "staging"
+
+  # ステージ変数: stagingエイリアスを向く
+  variables = {
+    alias = "staging"
+  }
+
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.rest_apigw_staging.arn
+    format = jsonencode({
+      requestId      = "$context.requestId"
+      ip             = "$context.identity.sourceIp"
+      requestTime    = "$context.requestTime"
+      httpMethod     = "$context.httpMethod"
+      resourcePath   = "$context.resourcePath"
+      status         = "$context.status"
+      responseLength = "$context.responseLength"
+    })
+  }
+
+  depends_on = [aws_cloudwatch_log_group.rest_apigw_staging, aws_api_gateway_account.main]
+}
+
+# Lambda実行権限（REST API用）- liveエイリアス
+resource "aws_lambda_permission" "rest_apigw_items_live" {
+  statement_id  = "AllowRESTAPIGatewayLive"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.items_rest.function_name
   qualifier     = aws_lambda_alias.items_rest_live.name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# Lambda実行権限（REST API用）- stagingエイリアス
+resource "aws_lambda_permission" "rest_apigw_items_staging" {
+  statement_id  = "AllowRESTAPIGatewayStaging"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.items_rest.function_name
+  qualifier     = aws_lambda_alias.items_rest_staging.name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }
@@ -448,5 +518,8 @@ output "lambda_function_names" {
 }
 
 output "rest_api_endpoint" {
-  value = "${aws_api_gateway_stage.prod.invoke_url}/items"
+  value = {
+    prod    = "${aws_api_gateway_stage.prod.invoke_url}/items"
+    staging = "${aws_api_gateway_stage.staging.invoke_url}/items"
+  }
 }
