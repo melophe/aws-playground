@@ -366,7 +366,7 @@ resource "aws_api_gateway_integration" "post_items" {
   http_method             = aws_api_gateway_method.post_items.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri = "arn:aws:apigateway:${data.aws_region.current.name}:lambda:path/2015-03-31/functions/arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${aws_lambda_function.items_rest.function_name}:$${stageVariables.alias}/invocations"
+  uri                     = "arn:aws:apigateway:${data.aws_region.current.name}:lambda:path/2015-03-31/functions/arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${aws_lambda_function.items_rest.function_name}:$${stageVariables.alias}/invocations"
 }
 
 # デプロイ
@@ -407,9 +407,9 @@ resource "aws_api_gateway_stage" "prod" {
   }
 
   canary_settings {
-    percent_traffic          = 10   # 10%をカナリアへ
-    deployment_id            = aws_api_gateway_deployment.canary.id
-    use_stage_cache          = false
+    percent_traffic = 10 # 10%をカナリアへ
+    deployment_id   = aws_api_gateway_deployment.canary.id
+    use_stage_cache = false
   }
 
   access_log_settings {
@@ -441,7 +441,7 @@ resource "aws_api_gateway_deployment" "canary" {
       aws_api_gateway_method.post_items,
       aws_api_gateway_integration.get_items,
       aws_api_gateway_integration.post_items,
-      "canary-v1",  # 新バージョンをカナリアに流すときにここを更新
+      "canary-v1", # 新バージョンをカナリアに流すときにここを更新
     ]))
   }
 
